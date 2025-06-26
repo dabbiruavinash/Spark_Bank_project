@@ -1,0 +1,777 @@
+Below is a comprehensive outline for an advanced PySpark Databricks project in the banking domain with object-oriented design, multiple data sources, and unit testing.
+
+banking_data_platform/
+├── configs/
+│   ├── oracle_config.json
+│   ├── snowflake_config.json
+│   ├── aws_config.json
+│   └── azure_config.json
+├── connectors/
+│   ├── __init__.py
+│   ├── oracle_connector.py
+│   ├── snowflake_connector.py
+│   ├── aws_connector.py
+│   └── azure_connector.py
+├── models/
+│   ├── __init__.py
+│   ├── customer.py
+│   ├── account.py
+│   └── transaction.py
+├── transformations/
+│   ├── __init__.py
+│   ├── customer_transformations.py
+│   ├── account_transformations.py
+│   └── transaction_transformations.py
+├── utils/
+│   ├── __init__.py
+│   ├── logger.py
+│   ├── data_validator.py
+│   └── encryption_utils.py
+├── tests/
+│   ├── __init__.py
+│   ├── test_oracle_connector.py
+│   ├── test_snowflake_connector.py
+│   ├── test_customer_transformations.py
+│   └── test_account_transformations.py
+├── jobs/
+│   ├── __init__.py
+│   ├── customer_etl_job.py
+│   ├── account_etl_job.py
+│   └── transaction_etl_job.py
+└── main.py
+
+
+Core Modules Implementation
+1. Oracle Connector (connectors/oracle_connector.py)
+
+from pyspark.sql import SparkSession
+from typing import Dict,Optional
+from pyspark.sql.DataFrame import DataFrame
+from connectors.base_connector import BaseConnector
+from utils.logger import Logger
+
+class OracleConnector(BaseConnector):
+      def __init__(self, spark:SparkSession, config: Dict[str,str], logger:Logger):
+          super().__init__(spark, config, logger)
+          self._validate_oracle_config(config)
+          self.jdbc_url = f"jdbc:oracle:thin@{config['host']} : {config['port']} / {config['service_name']}"
+          self.connection_properities = {
+           "user":config["username"].
+           "password":config["password"]
+           "driver":"oracle.jdbc.OracleDriver",
+           "oracle.jdbc.readTimeout":str(config.get("read_timeout",60000)),
+           "oracle.net.CONNECT_TIMEOUT":str(config.get("connect_timeout",10000)) }
+
+      def _validate_oracle_config(self, config: Dict[str, str]) -> None:
+          required_keys = {"host","port","service_name","username","password"}
+          if not all(key in config for key in required_keys):
+             raise ValueError(f"Missing required Oracle config parameters. Required: {required_keys}")
+ 
+      def read_table(self, table_name:str, predicates: Optional[list] = None, partition_column: Optional[str] = None, num_partitions: int = 10) -> DataFrame:
+          try:
+               read_options = {
+               "url" : self.jdbc_url,
+               "table" : table_name,
+               "properities": self.connection_properities}
+
+          if partition_column:
+             read_options.update({
+             "partitionColumn" : partition_column,
+             "lowerBound" : str(self._get_min_value(table_name, partition_column)),
+             "upperBound" : str(self._get_max_value(table_name, partition_column)),
+             "numPartitions" : str(num_partitions) })
+  
+          if predicates:
+             "read_options["predicated"] = predicates
+          self.logger.info(f"Reading Oracle table {table_name} with Options: {str(read_options)}")
+          return self.spark.read.format("jdbc").options(**read_options).load()
+
+       except Exception as e:
+          self.logger.error(f"Error reading from oracle table {table_name} : {str(e)}")
+          raise
+  
+       def _get_min_value(self, table_name: str, column_name: str) -> int:
+         query = f"(select min({column_name}) as min_val from {table_name}) tmp"
+         return self.spark.read.jdbc(
+         url = self.jdbc_url,
+         table = query
+         properities = self.connection_properities).first()["min_val"]
+
+       def _get_max_value(self, table_name: str, column_name: str) -> int:
+           query = f"(select max({column_name}) as max_val from {table_name}) tmp"
+           return self.spark.read.jdbc(
+           url = self.jdbc_url,
+           table = query,
+           properties = self.connection_properties).first()["max_val"]
+
+2. Snowflake Connector (connectors/snowflake_connector.py)
+
+from pyspark.sql import SparkSession
+from typing import Dict, Optional
+from pyspark.sql.dataframe import DataFrame
+from connectors.base_connector import BaseConnector
+from utils.logger import Logger
+
+class SnowflakeConnector(BaseConnector):
+     def __init__(self, spark:SparkSession, config: Dict[str, str], logger: Logger):
+          super().__init(spark,config,logger)
+          self._validate_snowflake_config(config)
+          self.sf_options = {
+          "sfURL" : f"{config["account']}.snowflakecomputing.com",
+          "sfUser" : config["username"],
+          "sfPassword" : config["password"],
+          "sfDatabase": config["database"],
+          "sfSchema" : config["schema"],
+          "sfWarehouse": config["warehouse"],
+          "sfRole" : config.get("role"," "),
+          "sfCompress" : "on",
+          "sfSSL" : "on"}
+
+     def _validate_snowflake_config(self, config: Dict[str,str]) -> None:
+        requried_keys = {"account","username", "password", "database", "schema", "warehouse"}
+        if not all(key in config for key in required_keys):
+           raise ValueError(f"Missing required Snowflake config parameters, Required: {required_keys}")
+
+     def read_table(self, table_name:str, query: Optional[str] = None) -> DataFrame:
+        try:
+            options = self.sf_options.copy()
+            if query:
+                options["query"] = query
+                self.logger.info(f"Executing Snowflake query: {query}")
+            else:
+                 options["dbtable"] = table_name
+                 self.logger.info(f"Reading snowflake table: {table_name}")
+
+             return self.spark.read.format("net.snowflake.spark.snowflake").options(**options).load()
+
+       except Exception as e:
+            self.logger.error(f"Error reading from Snowflake : {str(e)}")
+
+        def write_table(self, df: DataFrame, table_name: str, mode: str = "append") -> None:
+        """Write data to Snowflake table"""
+        try:
+            options = self.sf_options.copy()
+            options["dbtable"] = table_name
+            self.logger.info(f"Writing to Snowflake table {table_name} in {mode} mode")
+            
+            df.write.format("net.snowflake.spark.snowflake").options(**options).mode(mode).save()
+            
+        except Exception as e:
+            self.logger.error(f"Error writing to Snowflake table {table_name}: {str(e)}")
+            raise
+
+3. Customer Transformation Module (transformations/customer_transformations.py)
+
+from pyspark.sql import DataFrame, functions as F
+from pyspark.sql.types import StructType, StructField, StringType, DateType, DecimalType
+from models.customer import Customer
+from utils.data_validator import DataValidator
+from utils.logger import Logger
+
+class CustomerTransformations:
+       def __init__(self, spark, logger: Logger):
+             self.spark = spark
+             self.logger = logger
+             self.validator = DataValidator(logger)
+
+       def transform_customer_data(self, raw_df : DataFrame) -> DataFrame:
+       try:
+            required_schema = StructType([
+                StructField("customer_id", StringType(), False),
+                StructField("first_name", StringType(), True),
+                StructField("last_name", StringType(), True),
+                StructField("date_of_birth", DateType(), True),
+                StructField("ssn", StringType(), True),
+                StructField("email", StringType(), True),
+                StructField("phone_number", StringType(), True),
+                StructField("address_line1", StringType(), True),
+                StructField("address_line2", StringType(), True),
+                StructField("city", StringType(), True),
+                StructField("state", StringType(), True),
+                StructField("zip_code", StringType(), True),
+                StructField("country", StringType(), True),
+                StructField("customer_since", DateType(), True),
+                StructField("segment", StringType(), True),
+                StructField("credit_score", DecimalType(5,0), True),
+                StructField("total_assets", DecimalType(15,2), True),
+                StructField("kyc_status", StringType(), True),
+                StructField("last_updated", DateType(), True)])
+            
+            if not self.validator.validate_schema(raw_df, required_schema):
+                raise ValueError("Input DataFrame schema doesn't match required customer schema") 
+
+            transformed_df = raw_df.withColumn("full_name", F.concat(F.col("first_name"), F.lit(" "), F.col("last_name")))
+            .withColumn("current_age", F.floor(F.datediff(F.current_date(), F.col("date_of_birth")/365.25)
+            .withColumn("address", F.concat_ws(", ", F.col("address_line1"), F.col("address_line2"), F.col("city"), F.col("state"), F.col("zip_code"), F.col("country")))
+            .withColumn("is_high_value", F.when(F.col("total_assests") >= 1000000, True).otherwise(False))
+            .withColumn("credit_rating", 
+                           F.when(F.col("credit_score") >= 800, "Excellent")
+                            .when(F.col("credit_score") >= 740, "Very Good")
+                            .when(F.col("credit_score") >= 670, "Good")
+                            .when(F.col("credit_score") >= 580, "Fair")
+                            .otherwise("Poor")) \
+                .withColumn("customer_tenure_years", F.floor(F.datediff(F.current_date(), F.col("customer_since")) / 365.25)) \
+                .withColumn("is_kyc_complete", F.col("kyc_status") == "COMPLETE") \
+                .withColumn("record_source", F.lit("ORACLE_CUSTOMERS")) \
+                .withColumn("ingestion_timestamp", F.current_timestamp())
+
+
+             transformed_df = self.validator.apply_standard_checks(transformed_df, Customer.ID_COLUMNS, Customer.NOT_NULL_COLUMNS)
+
+             final_df = transformed_df.select(Customer..ID_COLUMNS + 
+                ["full_name", "date_of_birth", "current_age", "email", "phone_number", "address", 
+                 "customer_since", "customer_tenure_years", "segment", "credit_score", "credit_rating",
+                 "total_assets", "is_high_value", "kyc_status", "is_kyc_complete", "last_updated",
+                 "record_source", "ingestion_timestamp"])
+            
+            return final_df
+            
+        except Exception as e:
+            self.logger.error(f"Error transforming customer data: {str(e)}")
+            raise
+
+4. Account Transformation Module (transformations/account_transformations.py)
+
+from pyspark.sql import DataFrame, functions as F
+from pyspark.sql.types import StructType, StructField, StringType, DecimalType, DateType, TimestampType
+from models.account import Account
+from utils.data_validator import DataValidator
+
+class AccountTransformations:
+        def __init_(self, spark, logger: Logger):
+             self.spark = spark
+             self.logger = logger
+             self.validator = DataValidator(logger)
+
+        def transform_account_data(self, raw_df: DataFrame, exchange_rates_df: DataFrame) -> DataFrame:
+             try:
+                   required_schema = StructType([
+                StructField("account_id", StringType(), False),
+                StructField("customer_id", StringType(), False),
+                StructField("account_type", StringType(), False),
+                StructField("account_subtype", StringType(), True),
+                StructField("open_date", DateType(), False),
+                StructField("close_date", DateType(), True),
+                StructField("status", StringType(), False),
+                StructField("currency_code", StringType(), False),
+                StructField("current_balance", DecimalType(20, 4), False),
+                StructField("available_balance", DecimalType(20, 4), False),
+                StructField("hold_balance", DecimalType(20, 4), True),
+                StructField("interest_rate", DecimalType(10, 4), True),
+                StructField("overdraft_limit", DecimalType(15, 2), True),
+                StructField("last_activity_date", DateType(), True),
+                StructField("branch_id", StringType(), True),
+                StructField("primary_holder", StringType(), True),
+                StructField("secondary_holders", StringType(), True),
+                StructField("account_manager", StringType(), True),
+                StructField("last_updated", TimestampType(), True)
+            ])
+            
+            if not self.validator.validate_schema(raw_df, required_schema):
+                raise ValueError("Input DataFrame schema doesn't match required account schema")
+                
+            # Join with exchange rates
+            account_with_rates = raw_df.join(
+                F.broadcast(exchange_rates_df),
+                raw_df["currency_code"] == exchange_rates_df["from_currency"],
+                "left"
+            )
+            
+            # Apply transformations
+            transformed_df = account_with_rates \
+                .withColumn("is_active", F.col("status") == "ACTIVE") \
+                .withColumn("is_closed", F.col("close_date").isNotNull()) \
+                .withColumn("account_age_days", F.datediff(F.current_date(), F.col("open_date"))) \
+                .withColumn("account_age_years", F.col("account_age_days") / 365.25) \
+                .withColumn("usd_current_balance", 
+                           F.when(F.col("to_currency") == "USD", 
+                                 F.col("current_balance") * F.col("exchange_rate"))
+                            .otherwise(F.col("current_balance"))) \
+                .withColumn("usd_available_balance", 
+                           F.when(F.col("to_currency") == "USD", 
+                                 F.col("available_balance") * F.col("exchange_rate"))
+                            .otherwise(F.col("available_balance"))) \
+                .withColumn("balance_diff", F.col("current_balance") - F.col("available_balance"))) \
+                .withColumn("is_overdrawn", F.col("available_balance") < 0) \
+                .withColumn("has_overdraft_protection", F.col("overdraft_limit") > 0) \
+                .withColumn("record_source", F.lit("SNOWFLAKE_ACCOUNTS")) \
+                .withColumn("ingestion_timestamp", F.current_timestamp())
+                
+            # Apply data quality checks
+            transformed_df = self.validator.apply_standard_checks(transformed_df, Account.ID_COLUMNS, Account.NOT_NULL_COLUMNS)
+            
+            # Select final columns
+            final_df = transformed_df.select(
+                Account.ID_COLUMNS +
+                ["customer_id", "account_type", "account_subtype", "open_date", "close_date", 
+                 "is_active", "is_closed", "account_age_days", "account_age_years", "status",
+                 "currency_code", "current_balance", "available_balance", "hold_balance",
+                 "usd_current_balance", "usd_available_balance", "balance_diff",
+                 "interest_rate", "overdraft_limit", "is_overdrawn", "has_overdraft_protection",
+                 "last_activity_date", "branch_id", "primary_holder", "secondary_holders",
+                 "account_manager", "last_updated", "record_source", "ingestion_timestamp"])
+            
+            return final_df
+            
+        except Exception as e:
+            self.logger.error(f"Error transforming account data: {str(e)}")
+            raise
+
+5. AWS Connector (connectors/aws_connector.py)
+
+from pyspark.sql import DataFrame
+from typing import Dict
+from pyspark.sql import SparkSession
+from connectors.base_connector import BaseConnector
+from utils.logger import Logger
+
+class AWSConnector(BaseConnector):
+      def __init__(self, spark:SparkSession, config: Dict[str, str], logger : Logger):
+            super().__init__(spark, config, logger)
+            self._validate_aws_config(config)
+            self.s3_bucket = config["s3_bucket"]
+            self.aws_access_key = config["aws_access_key_id"]
+            self.aws_secret_key = config["aws_secret_access_key"]
+            self._configure_aws_credentials()
+
+       def _validate_aws_config(self, config: Dict[str, str]) -> None:
+        """Validate AWS configuration parameters"""
+        required_keys = {"s3_bucket", "aws_access_key_id", "aws_secret_access_key"}
+        if not all(key in config for key in required_keys):
+            raise ValueError(f"Missing required AWS config parameters. Required: {required_keys}")
+            
+    def _configure_aws_credentials(self) -> None:
+        """Configure AWS credentials in Hadoop configuration"""
+        hadoop_conf = self.spark.sparkContext._jsc.hadoopConfiguration()
+        hadoop_conf.set("fs.s3a.access.key", self.aws_access_key)
+        hadoop_conf.set("fs.s3a.secret.key", self.aws_secret_key)
+        hadoop_conf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        hadoop_conf.set("fs.s3a.multipart.size", "104857600")  # 100MB part size
+        hadoop_conf.set("fs.s3a.fast.upload", "true")
+        hadoop_conf.set("fs.s3a.fast.upload.buffer", "disk")
+        
+    def read_parquet(self, path: str) -> DataFrame:
+        """Read parquet files from S3 with optimized settings"""
+        try:
+            s3_path = f"s3a://{self.s3_bucket}/{path}"
+            self.logger.info(f"Reading parquet data from S3: {s3_path}")
+            return self.spark.read.parquet(s3_path)
+        except Exception as e:
+            self.logger.error(f"Error reading parquet from S3: {str(e)}")
+            raise
+            
+    def write_parquet(self, df: DataFrame, path: str, partition_cols: list = None, mode: str = "overwrite") -> None:
+        """Write DataFrame to S3 as parquet with advanced options"""
+        try:
+            s3_path = f"s3a://{self.s3_bucket}/{path}"
+            self.logger.info(f"Writing parquet data to S3: {s3_path}")
+            
+            writer = df.write \
+                .mode(mode) \
+                .option("compression", "snappy") \
+                .option("parquet.block.size", 256 * 1024 * 1024)  # 256MB row group size
+                
+            if partition_cols:
+                writer = writer.partitionBy(*partition_cols)
+                
+            writer.parquet(s3_path)
+            
+        except Exception as e:
+            self.logger.error(f"Error writing parquet to S3: {str(e)}")
+            raise
+            
+    def write_delta(self, df: DataFrame, path: str, mode: str = "overwrite") -> None:
+        """Write DataFrame to S3 as Delta Lake format"""
+        try:
+            s3_path = f"s3a://{self.s3_bucket}/{path}"
+            self.logger.info(f"Writing Delta Lake data to S3: {s3_path}")
+            
+            df.write.format("delta") \
+                .mode(mode) \
+                .option("compression", "snappy") \
+                .save(s3_path)
+                
+        except Exception as e:
+            self.logger.error(f"Error writing Delta Lake to S3: {str(e)}")
+            raise
+
+6. Customer ETL Job (jobs/customer_etl_job.py)
+
+from pyspark.sql import SparkSession
+from connectors.oracle_connector import OracleConnector
+from connectors.aws_connector import AWSConnector
+from transformations.customer_transformations import CustomerTransformations
+from utils.logger import Logger
+from utils.data_validator import DataValidator
+from models.customer import Customer
+from datetime import datetime
+
+class CustomerETLJob:
+       def __init__(self, spark : SparkSession, config: dict):
+             self.spark = spark
+             self.configv= config
+              self.logger = Logger(spark, "CustomerETLJob")
+        self.validator = DataValidator(self.logger)
+        self.oracle_connector = OracleConnector(spark, config["oracle"], self.logger)
+        self.aws_connector = AWSConnector(spark, config["aws"], self.logger)
+        self.transformer = CustomerTransformations(spark, self.logger)
+        
+    def run(self):
+        """Execute the complete ETL pipeline"""
+        try:
+            self.logger.info("Starting Customer ETL Job")
+            start_time = datetime.now()
+            
+            # Extract
+            self.logger.info("Extracting customer data from Oracle")
+            oracle_customers = self._extract_customer_data()
+            
+            # Transform
+            self.logger.info("Transforming customer data")
+            transformed_customers = self._transform_customer_data(oracle_customers)
+            
+            # Load
+            self.logger.info("Loading customer data to AWS S3")
+            self._load_customer_data(transformed_customers)
+            
+            # Data Quality Validation
+            self.logger.info("Running data quality checks")
+            self._validate_output_data()
+            
+            end_time = datetime.now()
+            self.logger.info(f"Customer ETL Job completed successfully in {end_time - start_time}")
+            
+        except Exception as e:
+            self.logger.error(f"Customer ETL Job failed: {str(e)}")
+            raise
+            
+    def _extract_customer_data(self) -> DataFrame:
+        """Extract customer data from Oracle with incremental logic"""
+        try:
+            # Check for incremental load
+            last_load_date = self._get_last_load_date("customers")
+            
+            if last_load_date:
+                self.logger.info(f"Incremental load since {last_load_date}")
+                query = f"(SELECT * FROM customers WHERE last_updated >= TO_DATE('{last_load_date}', 'YYYY-MM-DD')) tmp"
+                return self.oracle_connector.read_table(None, query)
+            else:
+                self.logger.info("Full load of customer data")
+                return self.oracle_connector.read_table("customers", partition_column="customer_id")
+                
+        except Exception as e:
+            self.logger.error(f"Error extracting customer data: {str(e)}")
+            raise
+            
+    def _transform_customer_data(self, raw_customers: DataFrame) -> DataFrame:
+        """Apply all transformations to customer data"""
+        try:
+            # Apply standard transformations
+            transformed = self.transformer.transform_customer_data(raw_customers)
+            
+            # Additional business-specific transformations
+            transformed = transformed.withColumn("is_vip", 
+                F.when((F.col("total_assets") >= 500000) & (F.col("credit_rating").isin(["Excellent", "Very Good"])), True)
+                .otherwise(False))
+                
+            return transformed
+            
+        except Exception as e:
+            self.logger.error(f"Error transforming customer data: {str(e)}")
+            raise
+            
+    def _load_customer_data(self, customers: DataFrame) -> None:
+        """Load transformed customer data to AWS S3"""
+        try:
+            # Write to Parquet with partitioning
+            self.aws_connector.write_parquet(
+                customers,
+                "banking/customers/",
+                partition_cols=["ingestion_date"],
+                mode="append"
+            )
+            
+            # Update metadata
+            self._update_last_load_date("customers", datetime.now().strftime("%Y-%m-%d"))
+            
+        except Exception as e:
+            self.logger.error(f"Error loading customer data: {str(e)}")
+            raise
+            
+    def _get_last_load_date(self, entity: str) -> Optional[str]:
+        """Get last successful load date from metadata"""
+        try:
+            # In a real implementation, this would query a metadata table
+            return None  # Simplified for example
+        except Exception as e:
+            self.logger.warning(f"Could not retrieve last load date: {str(e)}")
+            return None
+            
+    def _update_last_load_date(self, entity: str, load_date: str) -> None:
+        """Update last successful load date in metadata"""
+        try:
+            # In a real implementation, this would update a metadata table
+            pass
+        except Exception as e:
+            self.logger.warning(f"Could not update last load date: {str(e)}")
+            
+    def _validate_output_data(self) -> bool:
+        """Validate output data meets quality standards"""
+        try:
+            # Read the data we just wrote
+            output_data = self.aws_connector.read_parquet("banking/customers/")
+            
+            # Check for duplicates
+            duplicate_check = self.validator.check_for_duplicates(output_data, Customer.ID_COLUMNS)
+            if duplicate_check > 0:
+                self.logger.warning(f"Found {duplicate_check} duplicate customer records")
+                
+            # Check for nulls in critical fields
+            null_check = self.validator.check_for_nulls(output_data, Customer.NOT_NULL_COLUMNS)
+            if null_check > 0:
+                self.logger.warning(f"Found {null_check} null values in required customer fields")
+                
+            # Check data freshness
+            freshness_check = self.validator.check_data_freshness(output_data, "ingestion_timestamp", 24)
+            if not freshness_check:
+                self.logger.warning("Customer data is not fresh (older than 24 hours)")
+                
+            return duplicate_check == 0 and null_check == 0 and freshness_check
+            
+        except Exception as e:
+            self.logger.error(f"Data validation failed: {str(e)}")
+            return False
+
+Unit Testing Examples
+1. Test Oracle Connector (tests/test_oracle_connector.py)
+
+import pytest
+from pyspark.sql import SparkSession
+from connectors.oracle_connector import OracleConnector
+from utils.logger import Logger
+from unittest.mock import patch, MagicMock
+
+
+class TestOracleConnector:
+    """Unit tests for OracleConnector class"""
+    
+    @pytest.fixture(scope="class")
+    def spark(self):
+        return SparkSession.builder.master("local[2]").appName("OracleConnectorTest").getOrCreate()
+        
+    @pytest.fixture
+    def logger(self, spark):
+        return Logger(spark, "OracleConnectorTest")
+        
+    @pytest.fixture
+    def config(self):
+        return {
+            "host": "test-host",
+            "port": "1521",
+            "service_name": "test_service",
+            "username": "test_user",
+            "password": "test_pass",
+            "read_timeout": 60000,
+            "connect_timeout": 10000
+        }
+        
+    def test_init_valid_config(self, spark, logger, config):
+        """Test initialization with valid config"""
+        connector = OracleConnector(spark, config, logger)
+        assert connector.jdbc_url == "jdbc:oracle:thin:@test-host:1521/test_service"
+        assert connector.connection_properties["user"] == "test_user"
+        assert connector.connection_properties["password"] == "test_pass"
+        
+    def test_init_missing_config(self, spark, logger):
+        """Test initialization with missing config parameters"""
+        with pytest.raises(ValueError):
+            OracleConnector(spark, {}, logger)
+            
+    @patch("pyspark.sql.DataFrameReader.jdbc")
+    def test_read_table(self, mock_jdbc, spark, logger, config):
+        """Test read_table method"""
+        mock_df = MagicMock()
+        mock_jdbc.return_value = mock_df
+        
+        connector = OracleConnector(spark, config, logger)
+        result = connector.read_table("test_table")
+        
+        assert result == mock_df
+        mock_jdbc.assert_called_once()
+        
+    @patch("pyspark.sql.DataFrameReader.jdbc")
+    def test_read_table_with_partitioning(self, mock_jdbc, spark, logger, config):
+        """Test read_table with partitioning"""
+        mock_df = MagicMock()
+        mock_jdbc.return_value = mock_df
+        
+        connector = OracleConnector(spark, config, logger)
+        
+        # Mock the min/max value queries
+        with patch.object(connector, '_get_min_value', return_value=1), \
+             patch.object(connector, '_get_max_value', return_value=100):
+            result = connector.read_table("test_table", partition_column="id", num_partitions=10)
+            
+        assert result == mock_df
+        mock_jdbc.assert_called_once()
+        call_args = mock_jdbc.call_args[1]
+        assert call_args["numPartitions"] == "10"
+        assert call_args["partitionColumn"] == "id"
+
+2. Test Customer Transformations (tests/test_customer_transformations.py)
+
+import pytest
+from pyspark.sql import SparkSession, Row
+from pyspark.sql.types import StructType, StructField, StringType, DateType, DecimalType
+from transformations.customer_transformations import CustomerTransformations
+from utils.logger import Logger
+from datetime import date
+
+
+class TestCustomerTransformations:
+    """Unit tests for CustomerTransformations class"""
+    
+    @pytest.fixture(scope="class")
+    def spark(self):
+        return SparkSession.builder.master("local[2]").appName("CustomerTransformationsTest").getOrCreate()
+        
+    @pytest.fixture
+    def logger(self, spark):
+        return Logger(spark, "CustomerTransformationsTest")
+        
+    @pytest.fixture
+    def transformer(self, spark, logger):
+        return CustomerTransformations(spark, logger)
+        
+    @pytest.fixture
+    def sample_data(self, spark):
+        schema = StructType([
+            StructField("customer_id", StringType(), False),
+            StructField("first_name", StringType(), True),
+            StructField("last_name", StringType(), True),
+            StructField("date_of_birth", DateType(), True),
+            StructField("ssn", StringType(), True),
+            StructField("email", StringType(), True),
+            StructField("phone_number", StringType(), True),
+            StructField("address_line1", StringType(), True),
+            StructField("address_line2", StringType(), True),
+            StructField("city", StringType(), True),
+            StructField("state", StringType(), True),
+            StructField("zip_code", StringType(), True),
+            StructField("country", StringType(), True),
+            StructField("customer_since", DateType(), True),
+            StructField("segment", StringType(), True),
+            StructField("credit_score", DecimalType(5,0), True),
+            StructField("total_assets", DecimalType(15,2), True),
+            StructField("kyc_status", StringType(), True),
+            StructField("last_updated", DateType(), True)
+        ])
+        
+        data = [
+            Row(
+                customer_id="CUST1001",
+                first_name="John",
+                last_name="Doe",
+                date_of_birth=date(1980, 5, 15),
+                ssn="123-45-6789",
+                email="john.doe@example.com",
+                phone_number="555-123-4567",
+                address_line1="123 Main St",
+                address_line2="Apt 4B",
+                city="New York",
+                state="NY",
+                zip_code="10001",
+                country="USA",
+                customer_since=date(2015, 3, 10),
+                segment="PREMIUM",
+                credit_score=Decimal(750),
+                total_assets=Decimal(1500000.00),
+                kyc_status="COMPLETE",
+                last_updated=date.today()
+            )
+        ]
+        
+        return spark.createDataFrame(data, schema)
+        
+    def test_transform_customer_data(self, transformer, sample_data):
+        """Test customer data transformations"""
+        transformed_df = transformer.transform_customer_data(sample_data)
+        
+        # Check new columns
+        assert "full_name" in transformed_df.columns
+        assert "current_age" in transformed_df.columns
+        assert "is_high_value" in transformed_df.columns
+        assert "credit_rating" in transformed_df.columns
+        
+        # Check transformed values
+        row = transformed_df.first()
+        assert row.full_name == "John Doe"
+        assert row.is_high_value == True
+        assert row.credit_rating == "Very Good"
+        assert row.is_kyc_complete == True
+        
+    def test_invalid_schema(self, transformer, spark):
+        """Test with invalid input schema"""
+        invalid_data = spark.createDataFrame([Row(id=1, name="test")], ["id", "name"])
+        
+        with pytest.raises(ValueError):
+            transformer.transform_customer_data(invalid_data)
+
+Main Execution Script (main.py)
+
+from pyspark.sql import SparkSession
+from jobs.customer_etl_job import CustomerETLJob
+from jobs.account_etl_job import AccountETLJob
+from jobs.transaction_etl_job import TransactionETLJob
+from utils.logger import Logger
+import json
+import sys
+
+
+def load_config(config_path: str) -> dict:
+     with open(config_path) as f:
+            return json.load(f)
+
+def main():
+     try:
+         spark = SparkSession.builder \
+            .appName("BankingDataPlatform") \
+            .config("spark.sql.shuffle.partitions", "200") \
+            .config("spark.executor.memory", "8g") \
+            .config("spark.driver.memory", "4g") \
+            .config("spark.sql.adaptive.enabled", "true") \
+            .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+            .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
+            .config("spark.kryoserializer.buffer.max", "512m") \
+            .getOrCreate()
+            
+        logger = Logger(spark, "Main")
+        logger.info("Starting Banking Data Platform")
+        
+        # Load configuration
+        config = load_config("configs/main_config.json")
+        
+        # Execute ETL jobs
+        jobs = [
+            CustomerETLJob(spark, config),
+            AccountETLJob(spark, config),
+            TransactionETLJob(spark, config)
+        ]
+        
+        for job in jobs:
+            logger.info(f"Executing {job.__class__.__name__}")
+            job.run()
+            
+        logger.info("All ETL jobs completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Application failed: {str(e)}")
+        sys.exit(1)
+        
+    finally:
+        spark.stop()
+        
+
+if __name__ == "__main__":
+    main()
+
